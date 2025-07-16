@@ -4,6 +4,16 @@ This directory contains a `worktree` script that creates git worktrees for both 
 
 ## Configuration
 
+Put the script in the parent of your mattermost server and enterprise directories. E.g.:
+
+monorepo/
+│ ── worktree
+│ ── worktree-completion.bash
+│ ── README.md (this file)
+├── mattermost/
+└── enterprise/
+
+
 The script is configurable for different directory naming conventions. At the top of the `worktree` script, you can modify:
 
 ```bash
