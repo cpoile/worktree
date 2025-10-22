@@ -43,27 +43,34 @@ _worktree_all_branches() {
     fi
 }
 
-# Get existing worktree branch names
+# Get existing worktree branch names and short names
 _worktree_existing_branches() {
     local parent_dir=$(dirname "$(pwd)")
     local branches=""
-    
+
     # We can run from any directory that has server and enterprise subdirs
     if [ ! -d "$SERVER_DIR_NAME" ] || [ ! -d "$ENTERPRISE_DIR_NAME" ]; then
         return
     fi
-    
+
     for dir in "$parent_dir"/$BASENAME-*; do
         # Skip if directory doesn't exist or is a file
         if [ ! -d "$dir" ]; then
             continue
         fi
-        
+
         # Check if it has a server directory with git (worktrees have .git file, not directory)
         if [ -d "$dir/$SERVER_DIR_NAME" ] && ([ -d "$dir/$SERVER_DIR_NAME/.git" ] || [ -f "$dir/$SERVER_DIR_NAME/.git" ]); then
+            # Get the branch name
             local branch=$(cd "$dir/$SERVER_DIR_NAME" 2>/dev/null && git branch --show-current 2>/dev/null)
             if [ -n "$branch" ]; then
                 echo "$branch"
+            fi
+
+            # Also get the short name (directory suffix)
+            local short_name=$(basename "$dir" | sed "s/^$BASENAME-//")
+            if [ -n "$short_name" ]; then
+                echo "$short_name"
             fi
         fi
     done | sort -u

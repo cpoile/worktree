@@ -369,9 +369,12 @@ remove_worktree() {
     local enterprise_worktree=""
     
     print_status "Searching for worktrees with branch: $branch_name"
-    
+
     # Find the base directory that contains this branch
     local found=false
+    local match_type=""
+
+    # First, try to match by git branch name
     for dir in "$parent_dir"/$BASENAME-*; do
         if [ -d "$dir/$SERVER_DIR_NAME" ]; then
             local current_branch=$(cd "$dir/$SERVER_DIR_NAME" 2>/dev/null && git branch --show-current 2>/dev/null)
@@ -380,14 +383,33 @@ remove_worktree() {
                 server_worktree="$dir/$SERVER_DIR_NAME"
                 enterprise_worktree="$dir/$ENTERPRISE_DIR_NAME"
                 found=true
+                match_type="branch"
                 break
             fi
         fi
     done
-    
+
+    # If not found by branch name, try to match by short name (directory suffix)
     if [ "$found" = false ]; then
-        print_error "No worktree found for branch: $branch_name"
+        local target_dir="$parent_dir/$BASENAME-$branch_name"
+        if [ -d "$target_dir/$SERVER_DIR_NAME" ]; then
+            base_dir="$target_dir"
+            server_worktree="$target_dir/$SERVER_DIR_NAME"
+            enterprise_worktree="$target_dir/$ENTERPRISE_DIR_NAME"
+            found=true
+            match_type="short-name"
+        fi
+    fi
+
+    if [ "$found" = false ]; then
+        print_error "No worktree found for branch or short name: $branch_name"
         exit 1
+    fi
+
+    if [ "$match_type" = "branch" ]; then
+        print_status "Found worktree by branch name: $branch_name"
+    else
+        print_status "Found worktree by short name: $branch_name"
     fi
     
     print_status "Found base directory: $base_dir"
