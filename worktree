@@ -90,12 +90,100 @@ get_all_branches() {
     fi
 }
 
+# Function to prompt for server port
+prompt_for_server_port() {
+    local default_port="8065"
+    local selected_port=""
+
+    echo "" >&2
+    print_status "What port should the Mattermost server use?" >&2
+    echo -n "Enter port number (default: $default_port): " >&2
+    read selected_port
+
+    # If empty, use default
+    if [ -z "$selected_port" ]; then
+        selected_port="$default_port"
+    fi
+
+    # Validate port number
+    if ! [[ "$selected_port" =~ ^[0-9]+$ ]] || [ "$selected_port" -lt 1 ] || [ "$selected_port" -gt 65535 ]; then
+        print_error "Invalid port number. Using default: $default_port" >&2
+        selected_port="$default_port"
+    fi
+
+    printf "%s" "$selected_port"
+}
+
+# Function to prompt for metrics port
+prompt_for_metrics_port() {
+    local default_port="8067"
+    local selected_port=""
+
+    echo "" >&2
+    print_status "What port should the Mattermost metrics server use?" >&2
+    echo -n "Enter metrics port number (default: $default_port): " >&2
+    read selected_port
+
+    # If empty, use default
+    if [ -z "$selected_port" ]; then
+        selected_port="$default_port"
+    fi
+
+    # Validate port number
+    if ! [[ "$selected_port" =~ ^[0-9]+$ ]] || [ "$selected_port" -lt 1 ] || [ "$selected_port" -gt 65535 ]; then
+        print_error "Invalid port number. Using default: $default_port" >&2
+        selected_port="$default_port"
+    fi
+
+    printf "%s" "$selected_port"
+}
+
+# Function to update server port in config.json
+update_server_port() {
+    local config_file="$1"
+    local port="$2"
+    local metrics_port="$3"
+
+    if [ ! -f "$config_file" ]; then
+        print_warning "Config file not found: $config_file"
+        return 1
+    fi
+
+    print_status "Updating server port to $port and metrics port to $metrics_port in config.json"
+
+    # Update ListenAddress, SiteURL, and MetricsSettings.ListenAddress
+    if command -v sed >/dev/null 2>&1; then
+        # macOS/BSD sed requires -i with an argument (empty string for no backup)
+        if sed --version >/dev/null 2>&1; then
+            # GNU sed
+            # Update ServiceSettings.ListenAddress (first occurrence)
+            sed -i "0,/\"ListenAddress\": \":[0-9]*\"/s//\"ListenAddress\": \":$port\"/" "$config_file"
+            # Update SiteURL
+            sed -i "s|\"SiteURL\": \"http://localhost:[0-9]*\"|\"SiteURL\": \"http://localhost:$port\"|" "$config_file"
+            # Update MetricsSettings.ListenAddress (second occurrence, within MetricsSettings section)
+            sed -i "/\"MetricsSettings\":/,/}/{s/\"ListenAddress\": \":[0-9]*\"/\"ListenAddress\": \":$metrics_port\"/}" "$config_file"
+        else
+            # BSD/macOS sed
+            # Update ServiceSettings.ListenAddress (first occurrence)
+            sed -i '' "1,/\"ListenAddress\": \":[0-9]*\"/{s/\"ListenAddress\": \":[0-9]*\"/\"ListenAddress\": \":$port\"/;}" "$config_file"
+            # Update SiteURL
+            sed -i '' "s|\"SiteURL\": \"http://localhost:[0-9]*\"|\"SiteURL\": \"http://localhost:$port\"|" "$config_file"
+            # Update MetricsSettings.ListenAddress
+            sed -i '' "/\"MetricsSettings\":/,/}/{s/\"ListenAddress\": \":[0-9]*\"/\"ListenAddress\": \":$metrics_port\"/;}" "$config_file"
+        fi
+        print_status "Updated server ListenAddress to :$port, SiteURL to http://localhost:$port, and metrics ListenAddress to :$metrics_port"
+    else
+        print_error "sed command not found. Cannot update config.json"
+        return 1
+    fi
+}
+
 # Function to prompt for base branch with completion support
 prompt_for_base_branch() {
     local repo_dir="$1"
     local default_branch=$(detect_default_branch "$repo_dir")
     local selected_branch=""
-    
+
     print_status "Branch $BRANCH_NAME does not exist. What branch should be used as base?" >&2
     echo "Available branches:" >&2
     get_all_branches "$repo_dir" | sed 's/^/  /' >&2
@@ -176,6 +264,8 @@ fi
 
 COMMAND="$1"
 BRANCH_NAME=""
+SERVER_PORT="8065"    # Default server port
+METRICS_PORT="8067"  # Default metrics port
 
 # Validate command
 if [ "$COMMAND" != "create" ] && [ "$COMMAND" != "remove" ] && [ "$COMMAND" != "list" ]; then
@@ -434,6 +524,9 @@ NEW_BASE_DIR="$PARENT_DIR/$BASENAME-$SHORT_NAME"
 SERVER_WORKTREE_DIR="$NEW_BASE_DIR/$SERVER_DIR_NAME"
 ENTERPRISE_WORKTREE_DIR="$NEW_BASE_DIR/$ENTERPRISE_DIR_NAME"
 
+# Initialize BASE_BRANCH variable (may be set later if branch doesn't exist)
+BASE_BRANCH=""
+
 print_status "Branch name: $BRANCH_NAME"
 print_status "Short name: $SHORT_NAME"
 print_status "New base directory: $NEW_BASE_DIR"
@@ -488,33 +581,49 @@ done
 # Check if branch exists in server repo
 print_status "Checking $SERVER_DIR_NAME repository for branch: $BRANCH_NAME"
 cd "$SERVER_DIR_NAME"
-if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME" || git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
-    print_error "Branch $BRANCH_NAME already exists in $SERVER_DIR_NAME repo. Use existing branch or choose a different name."
-    cd "$CURRENT_DIR"
-    cleanup
-    exit 1
+
+SERVER_BRANCH_EXISTS=false
+if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+    print_status "Branch $BRANCH_NAME exists locally in $SERVER_DIR_NAME"
+    SERVER_BRANCH_EXISTS=true
+elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+    print_status "Branch $BRANCH_NAME exists on remote in $SERVER_DIR_NAME"
+    SERVER_BRANCH_EXISTS=true
+else
+    print_status "Branch $BRANCH_NAME does not exist in $SERVER_DIR_NAME - will create new branch"
 fi
 
-# Get base branch for new branch creation
-BASE_BRANCH=$(prompt_for_base_branch "$SERVER_DIR_NAME")
-print_status "Using base branch: $BASE_BRANCH"
-
-# Validate that base branch exists
-if ! git show-ref --verify --quiet "refs/heads/$BASE_BRANCH" && ! git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
-    print_error "Base branch $BASE_BRANCH does not exist"
-    cd "$CURRENT_DIR"
-    cleanup
-    exit 1
-fi
-
-# Create server worktree with new branch from base
+# Create server worktree
 print_status "Creating server worktree: $SERVER_WORKTREE_DIR"
-if git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
-    # Base branch exists locally
-    git worktree add -b "$BRANCH_NAME" "$SERVER_WORKTREE_DIR" "$BASE_BRANCH"
-elif git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
-    # Base branch exists on remote
-    git worktree add -b "$BRANCH_NAME" "$SERVER_WORKTREE_DIR" "origin/$BASE_BRANCH"
+if [ "$SERVER_BRANCH_EXISTS" = true ]; then
+    # Branch exists - check it out
+    if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+        # Branch exists locally
+        git worktree add "$SERVER_WORKTREE_DIR" "$BRANCH_NAME"
+    elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+        # Branch exists on remote - track it
+        git worktree add --track -b "$BRANCH_NAME" "$SERVER_WORKTREE_DIR" "origin/$BRANCH_NAME"
+    fi
+else
+    # Branch doesn't exist - create it from base
+    BASE_BRANCH=$(prompt_for_base_branch "$SERVER_DIR_NAME")
+    print_status "Using base branch: $BASE_BRANCH"
+
+    # Validate that base branch exists
+    if ! git show-ref --verify --quiet "refs/heads/$BASE_BRANCH" && ! git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
+        print_error "Base branch $BASE_BRANCH does not exist"
+        cd "$CURRENT_DIR"
+        cleanup
+        exit 1
+    fi
+
+    if git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
+        # Base branch exists locally
+        git worktree add -b "$BRANCH_NAME" "$SERVER_WORKTREE_DIR" "$BASE_BRANCH"
+    elif git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
+        # Base branch exists on remote
+        git worktree add -b "$BRANCH_NAME" "$SERVER_WORKTREE_DIR" "origin/$BASE_BRANCH"
+    fi
 fi
 
 # Go back to base directory
@@ -523,21 +632,54 @@ cd "$CURRENT_DIR"
 # Check if branch exists in enterprise repo
 print_status "Checking $ENTERPRISE_DIR_NAME repository for branch: $BRANCH_NAME"
 cd "$ENTERPRISE_DIR_NAME"
-if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME" || git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
-    print_error "Branch $BRANCH_NAME already exists in $ENTERPRISE_DIR_NAME repo. Use existing branch or choose a different name."
-    cd "$CURRENT_DIR"
-    cleanup
-    exit 1
+
+ENTERPRISE_BRANCH_EXISTS=false
+if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+    print_status "Branch $BRANCH_NAME exists locally in $ENTERPRISE_DIR_NAME"
+    ENTERPRISE_BRANCH_EXISTS=true
+elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+    print_status "Branch $BRANCH_NAME exists on remote in $ENTERPRISE_DIR_NAME"
+    ENTERPRISE_BRANCH_EXISTS=true
+else
+    print_status "Branch $BRANCH_NAME does not exist in $ENTERPRISE_DIR_NAME - will create new branch"
 fi
 
-# Create enterprise worktree with new branch from base
+# Create enterprise worktree
 print_status "Creating enterprise worktree: $ENTERPRISE_WORKTREE_DIR"
-if git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
-    # Base branch exists locally
-    git worktree add -b "$BRANCH_NAME" "$ENTERPRISE_WORKTREE_DIR" "$BASE_BRANCH"
-elif git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
-    # Base branch exists on remote
-    git worktree add -b "$BRANCH_NAME" "$ENTERPRISE_WORKTREE_DIR" "origin/$BASE_BRANCH"
+if [ "$ENTERPRISE_BRANCH_EXISTS" = true ]; then
+    # Branch exists - check it out
+    if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+        # Branch exists locally
+        git worktree add "$ENTERPRISE_WORKTREE_DIR" "$BRANCH_NAME"
+    elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+        # Branch exists on remote - track it
+        git worktree add --track -b "$BRANCH_NAME" "$ENTERPRISE_WORKTREE_DIR" "origin/$BRANCH_NAME"
+    fi
+else
+    # Branch doesn't exist - create it from base
+    # Use the same BASE_BRANCH if it was already determined for server, otherwise prompt
+    if [ -z "$BASE_BRANCH" ]; then
+        BASE_BRANCH=$(prompt_for_base_branch "$ENTERPRISE_DIR_NAME")
+        print_status "Using base branch: $BASE_BRANCH"
+    else
+        print_status "Using same base branch as server: $BASE_BRANCH"
+    fi
+
+    # Validate that base branch exists
+    if ! git show-ref --verify --quiet "refs/heads/$BASE_BRANCH" && ! git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
+        print_error "Base branch $BASE_BRANCH does not exist in $ENTERPRISE_DIR_NAME"
+        cd "$CURRENT_DIR"
+        cleanup
+        exit 1
+    fi
+
+    if git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
+        # Base branch exists locally
+        git worktree add -b "$BRANCH_NAME" "$ENTERPRISE_WORKTREE_DIR" "$BASE_BRANCH"
+    elif git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
+        # Base branch exists on remote
+        git worktree add -b "$BRANCH_NAME" "$ENTERPRISE_WORKTREE_DIR" "origin/$BASE_BRANCH"
+    fi
 fi
 
 # Go back to base directory
@@ -576,13 +718,26 @@ done
 for file_mapping in "${enterprise_files[@]}"; do
     source_file="$ENTERPRISE_DIR_NAME/${file_mapping%%:*}"
     dest_file="${file_mapping##*:}"
-    
+
     if [ -f "$source_file" ]; then
         print_status "Copying $(basename "$source_file") to enterprise worktree"
         mkdir -p "$(dirname "$ENTERPRISE_WORKTREE_DIR/$dest_file")"
         cp "$source_file" "$ENTERPRISE_WORKTREE_DIR/$dest_file"
     fi
 done
+
+# Prompt for and configure server port
+SERVER_PORT=$(prompt_for_server_port)
+METRICS_PORT=$(prompt_for_metrics_port)
+print_status "Configuring server to use port $SERVER_PORT and metrics port $METRICS_PORT"
+
+# Update config.json if it exists
+CONFIG_FILE="$SERVER_WORKTREE_DIR/config/config.json"
+if [ -f "$CONFIG_FILE" ]; then
+    update_server_port "$CONFIG_FILE" "$SERVER_PORT" "$METRICS_PORT"
+else
+    print_warning "config.json not found at $CONFIG_FILE - you may need to configure the ports manually"
+fi
 
 # Remove trap since we succeeded
 trap - ERR
@@ -594,6 +749,12 @@ echo "  $NEW_BASE_DIR/"
 echo "  ├── CLAUDE.md, CLAUDE.local.md, mise.toml, etc. (copied files)"
 echo "  ├── $(basename "$SERVER_WORKTREE_DIR")/ (git worktree)"
 echo "  └── $(basename "$ENTERPRISE_WORKTREE_DIR")/ (git worktree)"
+echo ""
+print_status "Server configured to run on:"
+echo "  - Main server port: $SERVER_PORT"
+echo "  - Metrics port:     $METRICS_PORT"
+print_status "Access the server at: http://localhost:$SERVER_PORT"
+print_status "Access metrics at:    http://localhost:$METRICS_PORT/metrics"
 echo ""
 print_status "To remove these worktrees later, use:"
 echo "  ./worktree remove $BRANCH_NAME"
