@@ -184,7 +184,7 @@ prompt_for_base_branch() {
     local default_branch=$(detect_default_branch "$repo_dir")
     local selected_branch=""
 
-    print_status "Branch $BRANCH_NAME does not exist. What branch should be used as base?" >&2
+    print_status "Branch $BRANCH_NAME does not exist in $repo_dir. What branch should be used as base?" >&2
     echo "Available branches:" >&2
     get_all_branches "$repo_dir" | sed 's/^/  /' >&2
     echo "" >&2
