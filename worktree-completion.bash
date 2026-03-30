@@ -19,12 +19,9 @@ get_enterprise_dir_name() {
     fi
 }
 
-SERVER_DIR_NAME=$(get_server_dir_name)
-ENTERPRISE_DIR_NAME=$(get_enterprise_dir_name)
-BASENAME=$(basename "$(pwd)")
-
 # Get available branches from server repo
 _worktree_branches() {
+    local SERVER_DIR_NAME=$(get_server_dir_name)
     if [ -d "$SERVER_DIR_NAME/.git" ]; then
         (cd "$SERVER_DIR_NAME" 2>/dev/null && {
             git branch --format='%(refname:short)' 2>/dev/null | grep -v '^master$' | grep -v '^main$'
@@ -35,6 +32,7 @@ _worktree_branches() {
 
 # Get all branches including main/master for base branch selection
 _worktree_all_branches() {
+    local SERVER_DIR_NAME=$(get_server_dir_name)
     if [ -d "$SERVER_DIR_NAME/.git" ]; then
         (cd "$SERVER_DIR_NAME" 2>/dev/null && {
             git branch --format='%(refname:short)' 2>/dev/null
@@ -43,8 +41,11 @@ _worktree_all_branches() {
     fi
 }
 
-# Get existing worktree branch names and short names
+# Get existing worktree branch names
 _worktree_existing_branches() {
+    local SERVER_DIR_NAME=$(get_server_dir_name)
+    local ENTERPRISE_DIR_NAME=$(get_enterprise_dir_name)
+    local BASENAME=$(basename "$(pwd)")
     local parent_dir=$(dirname "$(pwd)")
     local branches=""
 
@@ -58,77 +59,54 @@ _worktree_existing_branches() {
         if [ ! -d "$dir" ]; then
             continue
         fi
-
+        
         # Check if it has a server directory with git (worktrees have .git file, not directory)
         if [ -d "$dir/$SERVER_DIR_NAME" ] && ([ -d "$dir/$SERVER_DIR_NAME/.git" ] || [ -f "$dir/$SERVER_DIR_NAME/.git" ]); then
-            # Get the branch name
             local branch=$(cd "$dir/$SERVER_DIR_NAME" 2>/dev/null && git branch --show-current 2>/dev/null)
             if [ -n "$branch" ]; then
                 echo "$branch"
-            fi
-
-            # Also get the short name (directory suffix)
-            local short_name=$(basename "$dir" | sed "s/^$BASENAME-//")
-            if [ -n "$short_name" ]; then
-                echo "$short_name"
             fi
         fi
     done | sort -u
 }
 
-# Zsh completion using compctl
+# Zsh completion using compdef (compsys)
 if [ -n "$ZSH_VERSION" ]; then
-    # Completion function that handles commands and arguments
     _worktree_complete() {
-        local words=("${(@s/ /)BUFFER}")
-        local current_word="${words[-1]}"
-        local prev_word="${words[-2]:-}"
-        local word_count=${#words[@]}
-        
-        # If we're completing the first argument
-        if [ $word_count -eq 2 ] || ([ $word_count -eq 1 ] && [ -z "$current_word" ]); then
-            # Complete with commands only
-            local commands="create remove list"
-            reply=(${(s/ /)commands})
-        elif [ $word_count -eq 3 ] || ([ $word_count -eq 2 ] && [ -n "$current_word" ]); then
-            # Complete second argument based on first argument
-            case "$prev_word" in
-                "create")
-                    # Complete with available branches for first argument
-                    reply=(${(f)"$(_worktree_branches)"})
+        local -a subcmds
+        subcmds=(
+            'create:Create a new worktree from a branch'
+            'remove:Remove an existing worktree'
+            'list:List existing worktrees'
+        )
+
+        if (( CURRENT == 2 )); then
+            _describe 'subcommand' subcmds
+        elif (( CURRENT == 3 )); then
+            case "${words[2]}" in
+                create)
+                    local -a branches
+                    branches=(${(f)"$(_worktree_branches)"})
+                    _describe 'branch' branches
                     ;;
-                "remove")
-                    # Complete with existing branch names
-                    reply=(${(f)"$(_worktree_existing_branches)"})
-                    ;;
-                "list")
-                    # No completion needed for list
-                    reply=()
-                    ;;
-                *)
-                    # No additional completion
-                    reply=()
+                remove)
+                    local -a existing
+                    existing=(${(f)"$(_worktree_existing_branches)"})
+                    _describe 'worktree' existing
                     ;;
             esac
-        elif [ $word_count -eq 4 ] || ([ $word_count -eq 3 ] && [ -n "$current_word" ]); then
-            # Complete third argument (only for create command - short name)
-            local first_cmd="${words[1]}"
-            if [ "$first_cmd" = "create" ]; then
-                # For create command, third argument is short-name - no completion
-                reply=()
-            else
-                reply=()
-            fi
-        else
-            reply=()
+        elif (( CURRENT == 4 )); then
+            case "${words[2]}" in
+                remove)
+                    local -a flags=('--force:Force removal')
+                    _describe 'flag' flags
+                    ;;
+            esac
         fi
     }
-    
-    # Use compctl for completion
-    compctl -K _worktree_complete worktree
-    compctl -K _worktree_complete ./worktree
-    
-    echo "Zsh completion loaded for worktree with subcommands"
+
+    compdef _worktree_complete worktree
+    compdef _worktree_complete ./worktree
 fi
 
 # Bash completion
@@ -160,15 +138,21 @@ if [ -n "$BASH_VERSION" ]; then
                     COMPREPLY=()
                     ;;
             esac
-        # Complete third argument (short-name for create command)
+        # Complete third argument (short-name for create command, --force for remove)
         elif [ $COMP_CWORD -eq 3 ]; then
-            # Only create command has a third argument
-            if [ "${COMP_WORDS[1]}" = "create" ]; then
-                # Short name - no completion suggestions
-                COMPREPLY=()
-            else
-                COMPREPLY=()
-            fi
+            case "${COMP_WORDS[1]}" in
+                "create")
+                    # Short name - no completion suggestions
+                    COMPREPLY=()
+                    ;;
+                "remove")
+                    # Suggest --force flag
+                    COMPREPLY=($(compgen -W "--force" -- "$cur"))
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
         else
             COMPREPLY=()
         fi
@@ -176,6 +160,6 @@ if [ -n "$BASH_VERSION" ]; then
     
     complete -F _worktree_bash_complete worktree
     complete -F _worktree_bash_complete ./worktree
-    
+
     echo "Bash completion loaded for worktree with subcommands"
 fi
