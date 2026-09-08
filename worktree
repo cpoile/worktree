@@ -90,6 +90,79 @@ get_all_branches() {
     fi
 }
 
+# Read a branch name, cycling matching local/remote branches when Tab is pressed.
+# This avoids relying on programmable completion for `read`, which does not apply
+# to text entered at a `read -e` prompt.
+read_branch_with_completion() {
+    local repo_path="$1"
+    local prompt="$2"
+    local default_branch="$3"
+    local selected_branch=""
+
+    # Preserve support for piped input and other non-interactive callers.
+    if [ ! -t 0 ] || [ ! -t 2 ]; then
+        echo -n "$prompt" >&2
+        IFS= read -r selected_branch
+    else
+        local char=""
+        local completion_prefix=""
+        local completion_index=0
+        local last_action_was_tab=false
+        local branch=""
+        local matches=()
+
+        while true; do
+            printf '\r\033[K%s%s' "$prompt" "$selected_branch" >&2
+            IFS= read -r -s -n 1 char
+
+            # Enter produces an empty character with `read -n 1`.
+            if [ -z "$char" ]; then
+                echo "" >&2
+                break
+            fi
+
+            case "$char" in
+                $'\t')
+                    if [ "$last_action_was_tab" = false ]; then
+                        completion_prefix="$selected_branch"
+                        completion_index=0
+                        matches=()
+
+                        while IFS= read -r branch; do
+                            if [[ "$branch" == "$completion_prefix"* ]]; then
+                                matches[${#matches[@]}]="$branch"
+                            fi
+                        done < <(get_all_branches "$repo_path")
+                    elif [ ${#matches[@]} -gt 0 ]; then
+                        completion_index=$(( (completion_index + 1) % ${#matches[@]} ))
+                    fi
+
+                    if [ ${#matches[@]} -gt 0 ]; then
+                        selected_branch="${matches[$completion_index]}"
+                    else
+                        printf '\a' >&2
+                    fi
+                    last_action_was_tab=true
+                    ;;
+                $'\177'|$'\b')
+                    selected_branch="${selected_branch%?}"
+                    last_action_was_tab=false
+                    ;;
+                *)
+                    selected_branch+="$char"
+                    last_action_was_tab=false
+                    ;;
+            esac
+        done
+    fi
+
+    if [ -z "$selected_branch" ]; then
+        selected_branch="$default_branch"
+    fi
+
+    printf "%s" "$selected_branch"
+}
+
 # Function to prompt for server port
 prompt_for_server_port() {
     local default_port="8065"
@@ -183,50 +256,9 @@ prompt_for_base_branch() {
     local repo_dir="$1"
     local repo_path="$CURRENT_DIR/$repo_dir"
     local default_branch=$(detect_default_branch "$repo_path")
-    local selected_branch=""
 
     print_status "Branch $BRANCH_NAME does not exist in $repo_dir. What branch should be used as base?" >&2
-    echo "Available branches:" >&2
-    get_all_branches "$repo_path" | sed 's/^/  /' >&2
-    echo "" >&2
-    
-    # Enable bash completion for the read command if available
-    if [ -n "$BASH_VERSION" ]; then
-        # Set up completion for branch names
-        local branches=$(get_all_branches "$repo_path" | tr '\n' ' ')
-        
-        # Create a completion function for this specific read
-        _branch_complete() {
-            local cur="${COMP_WORDS[COMP_CWORD]}"
-            COMPREPLY=($(compgen -W "$branches" -- "$cur"))
-        }
-        
-        # Temporarily set up completion
-        complete -F _branch_complete read
-        
-        # Use readline with completion (without -i for macOS compatibility)
-        echo -n "Enter base branch (default: $default_branch): " >&2
-        read -e selected_branch
-        
-        # Remove temporary completion
-        complete -r read 2>/dev/null || true
-        
-        # If empty, use default
-        if [ -z "$selected_branch" ]; then
-            selected_branch="$default_branch"
-        fi
-    else
-        # Fallback for non-bash shells
-        echo -n "Enter base branch (default: $default_branch): " >&2
-        read selected_branch
-        
-        # If empty, use default
-        if [ -z "$selected_branch" ]; then
-            selected_branch="$default_branch"
-        fi
-    fi
-    
-    printf "%s" "$selected_branch"
+    read_branch_with_completion "$repo_path" "Enter base branch (default: $default_branch): " "$default_branch"
 }
 
 # Function to prompt for an existing branch to check out in a worktree
@@ -234,35 +266,9 @@ prompt_for_checkout_branch() {
     local repo_dir="$1"
     local repo_path="$CURRENT_DIR/$repo_dir"
     local default_branch="master"
-    local selected_branch=""
 
     print_status "Branch $BRANCH_NAME does not exist in $repo_dir. What branch should be checked out instead?" >&2
-    echo "Available branches:" >&2
-    get_all_branches "$repo_path" | sed 's/^/  /' >&2
-    echo "" >&2
-
-    if [ -n "$BASH_VERSION" ]; then
-        local branches=$(get_all_branches "$repo_path" | tr '\n' ' ')
-
-        _branch_complete() {
-            local cur="${COMP_WORDS[COMP_CWORD]}"
-            COMPREPLY=($(compgen -W "$branches" -- "$cur"))
-        }
-
-        complete -F _branch_complete read
-        echo -n "Enter branch to check out (default: $default_branch): " >&2
-        read -e selected_branch
-        complete -r read 2>/dev/null || true
-    else
-        echo -n "Enter branch to check out (default: $default_branch): " >&2
-        read selected_branch
-    fi
-
-    if [ -z "$selected_branch" ]; then
-        selected_branch="$default_branch"
-    fi
-
-    printf "%s" "$selected_branch"
+    read_branch_with_completion "$repo_path" "Enter branch to check out (default: $default_branch): " "$default_branch"
 }
 
 # Function to show usage

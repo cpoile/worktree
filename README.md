@@ -20,13 +20,13 @@ The script is configurable for different directory naming conventions. At the to
 
 ```bash
 # Configuration - change these if your directories have different names
-SERVER_DIR_NAME="server"
+SERVER_DIR_NAME="mattermost"
 ENTERPRISE_DIR_NAME="enterprise"
 ```
 
 For example, if your directories are named differently:
 ```bash
-SERVER_DIR_NAME="mattermost"
+SERVER_DIR_NAME="server"
 ENTERPRISE_DIR_NAME="mattermost-enterprise"
 ```
 
@@ -70,7 +70,7 @@ When you run the create command, the script will:
 
 1. **Check if branch exists** - If the branch already exists in either server or enterprise repos, it will exit with an error
 2. **Prompt for base branch** - You'll be asked to select which branch to use as the base for the new branch
-3. **Show available branches** - All local and remote branches will be displayed
+3. **Complete branch names** - Type a prefix and press Tab to cycle through matching local and remote branches
 4. **Default to master** - The script defaults to `master` branch (press Enter to accept)
 5. **Create new worktrees** - Creates the new branch from your selected base branch
 
@@ -121,14 +121,8 @@ When creating a new branch, you'll get an interactive prompt with tab completion
 ```bash
 $ ./worktree create my-new-feature feature
 [INFO] Branch my-new-feature does not exist. What branch should be used as base?
-Available branches:
-  master
-  release-10.9
-  MM-64569-LDAP-wizard-load-test
-  MM-64699-ldap-wizard-e2e-tests
-  ...
-
-Enter base branch (default: master): <TAB to complete>
+Enter base branch (default: master): rel<TAB>
+Enter base branch (default: master): release-10.9
 ```
 
 ## Cleanup Worktrees
