@@ -5,7 +5,7 @@ set -e
 #
 # Git Worktree Manager
 #
-# This script creates git worktrees for both server and enterprise repositories
+# This script creates git worktrees for both mattermost and enterprise repositories
 # in a new base directory structure, and copies all base files.
 #
 # For tab completion, source the completion script:
@@ -13,14 +13,14 @@ set -e
 #
 # Configuration - change these if your directories have different names
 
-SERVER_DIR_NAME="server"
+SERVER_DIR_NAME="mattermost"
 ENTERPRISE_DIR_NAME="enterprise"
 
 # List of additional files to copy to server worktree
 server_files=(
     "config/config.json:config/config.json"
     "docker-compose.override.yaml:docker-compose.override.yaml"
-    "server/config.override.mk:server/config.override.mk"
+    "mattermost/config.override.mk:mattermost/config.override.mk"
     # Add more files here in format "source:destination"
     # "sub-dir/other-file.txt:sub-dir/other-file.txt"
 )
@@ -35,6 +35,7 @@ enterprise_files=(
 
 # Get current directory name to use as base name
 BASENAME=$(basename "$(pwd)")
+WORKTREE_PREFIX="${BASENAME}_"
 
 # Colors for output
 RED='\033[0;31m'
@@ -180,18 +181,19 @@ update_server_port() {
 # Function to prompt for base branch with completion support
 prompt_for_base_branch() {
     local repo_dir="$1"
-    local default_branch=$(detect_default_branch "$repo_dir")
+    local repo_path="$CURRENT_DIR/$repo_dir"
+    local default_branch=$(detect_default_branch "$repo_path")
     local selected_branch=""
 
     print_status "Branch $BRANCH_NAME does not exist in $repo_dir. What branch should be used as base?" >&2
     echo "Available branches:" >&2
-    get_all_branches "$repo_dir" | sed 's/^/  /' >&2
+    get_all_branches "$repo_path" | sed 's/^/  /' >&2
     echo "" >&2
     
     # Enable bash completion for the read command if available
     if [ -n "$BASH_VERSION" ]; then
         # Set up completion for branch names
-        local branches=$(get_all_branches "$repo_dir" | tr '\n' ' ')
+        local branches=$(get_all_branches "$repo_path" | tr '\n' ' ')
         
         # Create a completion function for this specific read
         _branch_complete() {
@@ -227,6 +229,42 @@ prompt_for_base_branch() {
     printf "%s" "$selected_branch"
 }
 
+# Function to prompt for an existing branch to check out in a worktree
+prompt_for_checkout_branch() {
+    local repo_dir="$1"
+    local repo_path="$CURRENT_DIR/$repo_dir"
+    local default_branch="master"
+    local selected_branch=""
+
+    print_status "Branch $BRANCH_NAME does not exist in $repo_dir. What branch should be checked out instead?" >&2
+    echo "Available branches:" >&2
+    get_all_branches "$repo_path" | sed 's/^/  /' >&2
+    echo "" >&2
+
+    if [ -n "$BASH_VERSION" ]; then
+        local branches=$(get_all_branches "$repo_path" | tr '\n' ' ')
+
+        _branch_complete() {
+            local cur="${COMP_WORDS[COMP_CWORD]}"
+            COMPREPLY=($(compgen -W "$branches" -- "$cur"))
+        }
+
+        complete -F _branch_complete read
+        echo -n "Enter branch to check out (default: $default_branch): " >&2
+        read -e selected_branch
+        complete -r read 2>/dev/null || true
+    else
+        echo -n "Enter branch to check out (default: $default_branch): " >&2
+        read selected_branch
+    fi
+
+    if [ -z "$selected_branch" ]; then
+        selected_branch="$default_branch"
+    fi
+
+    printf "%s" "$selected_branch"
+}
+
 # Function to show usage
 usage() {
     echo "Usage: $0 <command> [arguments]"
@@ -242,8 +280,8 @@ usage() {
     echo "  $0 remove MM-63556-compliance-export-download --force"
     echo "  $0 list"
     echo ""
-    echo "Create will make:"
-    echo "  - $BASENAME-compliance-export/"
+echo "Create will make:"
+echo "  - ${WORKTREE_PREFIX}compliance-export/"
     echo "    ├── CLAUDE.md, CLAUDE.local.md, etc. (copied from current base dir)"
     echo "    ├── $SERVER_DIR_NAME/ (git worktree for MM-63556-compliance-export-download branch)"
     echo "    └── $ENTERPRISE_DIR_NAME/ (git worktree for MM-63556-compliance-export-download branch)"
@@ -333,12 +371,12 @@ list_worktrees() {
     local found=false
     
     print_status "Existing worktree directories:"
-    for dir in "$parent_dir"/$BASENAME-*; do
+    for dir in "$parent_dir"/${WORKTREE_PREFIX}*; do
         if [ -d "$dir" ]; then
-            local short_name=$(basename "$dir" | sed "s/^$BASENAME-//")
+            local short_name=$(basename "$dir" | sed "s/^${WORKTREE_PREFIX}//")
             local branch_info=""
             
-            # Try to get branch info from server worktree
+            # Try to get branch info from mattermost worktree
             if [ -d "$dir/$SERVER_DIR_NAME" ]; then
                 branch_info=$(cd "$dir/$SERVER_DIR_NAME" 2>/dev/null && git branch --show-current 2>/dev/null)
                 if [ -n "$branch_info" ]; then
@@ -374,7 +412,7 @@ remove_worktree() {
     local match_type=""
 
     # First, try to match by git branch name
-    for dir in "$parent_dir"/$BASENAME-*; do
+    for dir in "$parent_dir"/${WORKTREE_PREFIX}*; do
         if [ -d "$dir/$SERVER_DIR_NAME" ]; then
             local current_branch=$(cd "$dir/$SERVER_DIR_NAME" 2>/dev/null && git branch --show-current 2>/dev/null)
             if [ "$current_branch" = "$branch_name" ]; then
@@ -390,7 +428,7 @@ remove_worktree() {
 
     # If not found by branch name, try to match by short name (directory suffix)
     if [ "$found" = false ]; then
-        local target_dir="$parent_dir/$BASENAME-$branch_name"
+        local target_dir="$parent_dir/${WORKTREE_PREFIX}${branch_name}"
         if [ -d "$target_dir/$SERVER_DIR_NAME" ]; then
             base_dir="$target_dir"
             server_worktree="$target_dir/$SERVER_DIR_NAME"
@@ -460,7 +498,7 @@ remove_worktree() {
     # Ask if user wants to delete the branches from both repos (unless force mode)
     if [ "$force_mode" = false ]; then
         echo ""
-        echo -e "${RED}[WARNING]${NC} Do you also want to delete the branch '$branch_name' from both server and enterprise repositories?"
+        echo -e "${RED}[WARNING]${NC} Do you also want to delete the branch '$branch_name' from both mattermost and enterprise repositories?"
         echo -e "${RED}[WARNING]${NC} This will permanently delete the branch and cannot be undone!"
         echo -e "${RED}[WARNING]${NC} Only do this if you're sure you no longer need the branch."
         echo ""
@@ -471,7 +509,7 @@ remove_worktree() {
             [yY]|[yY][eE][sS])
                 print_status "Deleting branch '$branch_name' from repositories..."
                 
-                # Delete from server repo
+                # Delete from mattermost repo
                 if (cd "$SERVER_DIR_NAME" 2>/dev/null && git show-ref --verify --quiet "refs/heads/$branch_name"); then
                     print_status "Deleting branch '$branch_name' from $SERVER_DIR_NAME repository"
                     (cd "$SERVER_DIR_NAME" && git branch -D "$branch_name" 2>/dev/null || true)
@@ -498,7 +536,7 @@ remove_worktree() {
 CURRENT_DIR=$(pwd)
 CURRENT_BASENAME=$(basename "$CURRENT_DIR")
 
-# Validate that server and enterprise directories exist and are git repos
+# Validate that mattermost and enterprise directories exist and are git repos
 if [ ! -d "$SERVER_DIR_NAME" ]; then
     print_error "$SERVER_DIR_NAME directory not found in current directory"
     exit 1
@@ -541,7 +579,7 @@ esac
 # Create command logic starts here
 # Get parent directory (where we'll create the new base directory)
 PARENT_DIR=$(dirname "$CURRENT_DIR")
-NEW_BASE_DIR="$PARENT_DIR/$BASENAME-$SHORT_NAME"
+NEW_BASE_DIR="$PARENT_DIR/${WORKTREE_PREFIX}${SHORT_NAME}"
 SERVER_WORKTREE_DIR="$NEW_BASE_DIR/$SERVER_DIR_NAME"
 ENTERPRISE_WORKTREE_DIR="$NEW_BASE_DIR/$ENTERPRISE_DIR_NAME"
 
@@ -582,10 +620,10 @@ cleanup() {
 # Set trap for cleanup on error
 trap cleanup ERR
 
-# Copy all files and directories from current base dir (except server and enterprise)
-print_status "Copying base files (excluding server and enterprise directories)..."
+# Copy all files and directories from current base dir (except mattermost and enterprise)
+print_status "Copying base files (excluding mattermost and enterprise directories)..."
 for item in * .*; do
-    # Skip . and .. and server and enterprise directories
+    # Skip . and .. and mattermost and enterprise directories
     if [ "$item" = "." ] || [ "$item" = ".." ] || [ "$item" = "$SERVER_DIR_NAME" ] || [ "$item" = "$ENTERPRISE_DIR_NAME" ]; then
         continue
     fi
@@ -599,7 +637,7 @@ for item in * .*; do
     cp -r "$item" "$NEW_BASE_DIR/"
 done
 
-# Check if branch exists in server repo
+# Check if branch exists in mattermost repo
 print_status "Checking $SERVER_DIR_NAME repository for branch: $BRANCH_NAME"
 cd "$SERVER_DIR_NAME"
 
@@ -614,8 +652,8 @@ else
     print_status "Branch $BRANCH_NAME does not exist in $SERVER_DIR_NAME - will create new branch"
 fi
 
-# Create server worktree
-print_status "Creating server worktree: $SERVER_WORKTREE_DIR"
+# Create mattermost worktree
+print_status "Creating mattermost worktree: $SERVER_WORKTREE_DIR"
 if [ "$SERVER_BRANCH_EXISTS" = true ]; then
     # Branch exists - check it out
     if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
@@ -662,7 +700,7 @@ elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
     print_status "Branch $BRANCH_NAME exists on remote in $ENTERPRISE_DIR_NAME"
     ENTERPRISE_BRANCH_EXISTS=true
 else
-    print_status "Branch $BRANCH_NAME does not exist in $ENTERPRISE_DIR_NAME - will create new branch"
+    print_status "Branch $BRANCH_NAME does not exist in $ENTERPRISE_DIR_NAME - will prompt for a branch to check out"
 fi
 
 # Create enterprise worktree
@@ -677,29 +715,24 @@ if [ "$ENTERPRISE_BRANCH_EXISTS" = true ]; then
         git worktree add --track -b "$BRANCH_NAME" "$ENTERPRISE_WORKTREE_DIR" "origin/$BRANCH_NAME"
     fi
 else
-    # Branch doesn't exist - create it from base
-    # Use the same BASE_BRANCH if it was already determined for server, otherwise prompt
-    if [ -z "$BASE_BRANCH" ]; then
-        BASE_BRANCH=$(prompt_for_base_branch "$ENTERPRISE_DIR_NAME")
-        print_status "Using base branch: $BASE_BRANCH"
-    else
-        print_status "Using same base branch as server: $BASE_BRANCH"
-    fi
+    # Branch doesn't exist - prompt for an existing enterprise branch to check out
+    ENTERPRISE_CHECKOUT_BRANCH=$(prompt_for_checkout_branch "$ENTERPRISE_DIR_NAME")
+    print_status "Checking out enterprise branch: $ENTERPRISE_CHECKOUT_BRANCH"
 
-    # Validate that base branch exists
-    if ! git show-ref --verify --quiet "refs/heads/$BASE_BRANCH" && ! git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
-        print_error "Base branch $BASE_BRANCH does not exist in $ENTERPRISE_DIR_NAME"
+    # Validate that the selected branch exists
+    if ! git show-ref --verify --quiet "refs/heads/$ENTERPRISE_CHECKOUT_BRANCH" && ! git show-ref --verify --quiet "refs/remotes/origin/$ENTERPRISE_CHECKOUT_BRANCH"; then
+        print_error "Branch $ENTERPRISE_CHECKOUT_BRANCH does not exist in $ENTERPRISE_DIR_NAME"
         cd "$CURRENT_DIR"
         cleanup
         exit 1
     fi
 
-    if git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
-        # Base branch exists locally
-        git worktree add -b "$BRANCH_NAME" "$ENTERPRISE_WORKTREE_DIR" "$BASE_BRANCH"
-    elif git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
-        # Base branch exists on remote
-        git worktree add -b "$BRANCH_NAME" "$ENTERPRISE_WORKTREE_DIR" "origin/$BASE_BRANCH"
+    # Use a detached worktree because the selected branch may already be checked out
+    # in the main enterprise repository (especially the default master branch).
+    if git show-ref --verify --quiet "refs/heads/$ENTERPRISE_CHECKOUT_BRANCH"; then
+        git worktree add --detach "$ENTERPRISE_WORKTREE_DIR" "$ENTERPRISE_CHECKOUT_BRANCH"
+    elif git show-ref --verify --quiet "refs/remotes/origin/$ENTERPRISE_CHECKOUT_BRANCH"; then
+        git worktree add --detach "$ENTERPRISE_WORKTREE_DIR" "origin/$ENTERPRISE_CHECKOUT_BRANCH"
     fi
 fi
 
@@ -725,7 +758,7 @@ for file_mapping in "${server_files[@]}"; do
     dest_file="${file_mapping##*:}"
     
     if [ -f "$source_file" ]; then
-        print_status "Copying $(basename "$source_file") to server worktree"
+        print_status "Copying $(basename "$source_file") to mattermost worktree"
         mkdir -p "$(dirname "$SERVER_WORKTREE_DIR/$dest_file")"
         cp "$source_file" "$SERVER_WORKTREE_DIR/$dest_file"
     fi
@@ -750,10 +783,10 @@ for file_mapping in "${enterprise_files[@]}"; do
     fi
 done
 
-# Prompt for and configure server port
+# Prompt for and configure mattermost port
 SERVER_PORT=$(prompt_for_server_port)
 METRICS_PORT=$(prompt_for_metrics_port)
-print_status "Configuring server to use port $SERVER_PORT and metrics port $METRICS_PORT"
+print_status "Configuring mattermost to use port $SERVER_PORT and metrics port $METRICS_PORT"
 
 # Update config.json if it exists
 CONFIG_FILE="$SERVER_WORKTREE_DIR/config/config.json"
@@ -782,3 +815,4 @@ print_status "Access metrics at:    http://localhost:$METRICS_PORT/metrics"
 echo ""
 print_status "To remove these worktrees later, use:"
 echo "  ./worktree remove $BRANCH_NAME"
+print_status "Final worktree directory: $NEW_BASE_DIR"
